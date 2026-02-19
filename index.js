@@ -313,4 +313,140 @@ client.on("interactionCreate", async (interaction) => {
         const createdAt = new Date().toISOString();
         const insShot = await run(
           db,
-          `INSERT INTO shots (shot_date, master_id, master_nam_
+          `INSERT INTO shots (shot_date, master_id, master_name, created_by_id, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          [pending.date, pending.masterId, pending.masterName, interaction.user.id, createdAt]
+        );
+
+        const shotId = insShot.lastID;
+        const resolved = await resolveNames(interaction.guild, [...pending.playerIds]);
+
+        for (const p of resolved) {
+          await run(
+            db,
+            `INSERT OR IGNORE INTO attendance (shot_id, player_id, player_name)
+             VALUES (?, ?, ?)`,
+            [shotId, p.id, p.name]
+          );
+        }
+
+        pendingAdd.delete(key);
+
+        return interaction.update({
+          content:
+            `✅ Shot registrata!\n📅 **${pending.date}** — 🎲 Master: **${pending.masterName}**\n` +
+            `👥 Giocatori (${resolved.length}): ${resolved.map((p) => `**${p.name}**`).join(", ")}`,
+          components: [],
+        });
+      }
+
+      // ---- SUGGEST buttons ----
+      if (kind === "shot_suggest_reset") {
+        const pending = pendingSuggest.get(key);
+        if (!pending) return interaction.reply({ content: "❌ Sessione scaduta. Rifai `/shot suggest`.", ephemeral: true });
+        pending.bookedIds.clear();
+        return interaction.reply({ content: "🧹 Lista prenotati resettata. Riseleziona dal menu.", ephemeral: true });
+      }
+
+      if (kind === "shot_suggest_cancel") {
+        pendingSuggest.delete(key);
+        return interaction.update({ content: "❎ Operazione annullata.", components: [] });
+      }
+
+      if (kind === "shot_suggest_confirm") {
+        const isGm = await hasRoleByName(interaction, GM_ROLE_NAME);
+        if (!isGm) return interaction.reply({ content: `❌ Serve il ruolo @${GM_ROLE_NAME}.`, ephemeral: true });
+
+        const pending = pendingSuggest.get(key);
+        if (!pending) return interaction.reply({ content: "❌ Sessione scaduta. Rifai `/shot suggest`.", ephemeral: true });
+
+        if (pending.bookedIds.size === 0) {
+          return interaction.reply({ content: "❌ Nessun prenotato selezionato. Usa il menu (max 25).", ephemeral: true });
+        }
+
+        const slots = pending.slots;
+        const lookbackDays = pending.lookbackDays;
+        const ignoreDays = pending.ignoreDays;
+
+        const today = todayYYYYMMDD();
+        const lookbackFrom = minusDaysYYYYMMDD(today, lookbackDays);
+
+        const bookedIds = [...pending.bookedIds];
+
+        // last played per ciascun prenotato (se mai giocato -> null)
+        const lastPlayedRows = await all(
+          db,
+          `
+          SELECT a.player_id, a.player_name, MAX(s.shot_date) as last_played
+          FROM attendance a
+          JOIN shots s ON s.id = a.shot_id
+          WHERE a.player_id IN (${bookedIds.map(() => "?").join(",")})
+          GROUP BY a.player_id, a.player_name
+          `,
+          bookedIds
+        );
+
+        const lastMap = new Map(lastPlayedRows.map((r) => [r.player_id, { name: r.player_name, last: r.last_played }]));
+
+        // recent sessions count
+        const recentRows = await all(
+          db,
+          `
+          SELECT a.player_id, COUNT(*) as recent_sessions
+          FROM attendance a
+          JOIN shots s ON s.id = a.shot_id
+          WHERE a.player_id IN (${bookedIds.map(() => "?").join(",")})
+            AND s.shot_date BETWEEN ? AND ?
+          GROUP BY a.player_id
+          `,
+          [...bookedIds, lookbackFrom, today]
+        );
+
+        const recentMap = new Map(recentRows.map((r) => [r.player_id, r.recent_sessions]));
+
+        const resolvedBooked = await resolveNames(interaction.guild, bookedIds);
+
+        const scored = resolvedBooked.map((p) => {
+          const last = lastMap.get(p.id)?.last ?? null;
+          const name = lastMap.get(p.id)?.name ?? p.name;
+          const daysSince = last ? daysBetween(last, today) : 999999;
+          const recent = recentMap.get(p.id) ?? 0;
+          return { id: p.id, name, last, daysSince, recent };
+        });
+
+        const filtered = scored.filter((p) => (p.last ? p.daysSince >= ignoreDays : true));
+
+        filtered.sort((a, b) => {
+          if (b.daysSince !== a.daysSince) return b.daysSince - a.daysSince;
+          if (a.recent !== b.recent) return a.recent - b.recent;
+          return a.name.localeCompare(b.name);
+        });
+
+        const picks = filtered.slice(0, Math.max(1, slots));
+
+        const lines = picks.map(
+          (p, i) =>
+            `${i + 1}. **${p.name}** — ultima: ${p.last ?? "mai"} (${p.last ? `${p.daysSince}g fa` : "—"}), recenti(${lookbackDays}g): **${p.recent}**`
+        );
+
+        pendingSuggest.delete(key);
+
+        return interaction.update({
+          content:
+            `🎯 **Suggerimento dai prenotati** (slots=${slots}, lookback=${lookbackDays}g, ignore=${ignoreDays}g)\n` +
+            lines.join("\n"),
+          components: [],
+        });
+      }
+    }
+  } catch (err) {
+    console.error(err);
+    if (interaction.isRepliable()) {
+      const msg = "❌ Errore interno. Controlla i log su Railway.";
+      if (interaction.replied || interaction.deferred) return interaction.followUp({ content: msg, ephemeral: true });
+      return interaction.reply({ content: msg, ephemeral: true });
+    }
+  }
+});
+
+client.login(process.env.DISCORD_TOKEN);
