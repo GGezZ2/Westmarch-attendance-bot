@@ -71,10 +71,11 @@ client.on("interactionCreate", async (interaction) => {
         const modal = new ModalBuilder()
           .setCustomId(`shot_add_modal|${date}|${master.id}|${master.username}`)
           .setTitle("Registra Oneshoot - Giocatori");
-
+        
         const input = new TextInputBuilder()
           .setCustomId("players_text")
-          .setLabel("Incolla qui i giocatori (menzioni @... anche su più righe)")
+          .setLabel("Incolla le menzioni dei giocatori")
+          .setPlaceholder("@A @B @C (anche su più righe)")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(true)
           .setMaxLength(4000);
@@ -98,7 +99,8 @@ client.on("interactionCreate", async (interaction) => {
 
         const input = new TextInputBuilder()
           .setCustomId("booked_text")
-          .setLabel("Incolla qui i prenotati (menzioni @... anche su più righe)")
+          .setLabel("Incolla qui i prenotati")
+          .setPlaceholder("@A @B @C (anche su più righe)")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(true)
           .setMaxLength(4000);
